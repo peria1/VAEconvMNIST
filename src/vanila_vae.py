@@ -1,4 +1,3 @@
-from __future__ import print_function
 import argparse
 import torch
 import torch.utils.data
@@ -15,9 +14,9 @@ import numpy as np
 from PIL import Image
 
 parser = argparse.ArgumentParser(description='PyTorch VAE')
-parser.add_argument('--batch-size', type=int, default=128, metavar='N',
+parser.add_argument('--batch-size', type=int, default=20, metavar='N',
                     help='input batch size for training (default: 128)')
-parser.add_argument('--epochs', type=int, default=20, metavar='N',
+parser.add_argument('--epochs', type=int, default=2, metavar='N',
                     help='number of epochs to train (default: 20)')
 parser.add_argument('--no-cuda', action='store_true', default=False,
                     help='enables CUDA training')
@@ -28,28 +27,55 @@ parser.add_argument('--log-interval', type=int, default=1, metavar='N',
 
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
+args.cuda = not args.no_cuda and torch.cuda.is_available()
 
 torch.manual_seed(args.seed)
-if args.cuda:
-    torch.cuda.manual_seed(args.seed)
+
+device = torch.device("cuda" if args.cuda else "cpu")
+
+#torch.manual_seed(args.seed)
+#if args.cuda:
+#    torch.cuda.manual_seed(args.seed)
 
 kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
-train_loader = range(2080)
-test_loader = range(40)
+#train_loader = range(2080)
+#test_loader = range(40)
+#MNIST_PATH = '/home/bill/Desktop/Desktop/Karrington/git repo/data'
+#mnist_train_loader = torch.utils.data.DataLoader(
+#    datasets.MNIST(MNIST_PATH, train=True, download=False,
+#                   transform=transforms.ToTensor()),
+#    batch_size=args.batch_size, shuffle=True, **kwargs)
+#mnist_test_loader = torch.utils.data.DataLoader(
+#    datasets.MNIST(MNIST_PATH, train=False, transform=transforms.ToTensor()),
+#    batch_size=args.batch_size, shuffle=True, **kwargs)
+#
 
-totensor = transforms.ToTensor()
-def load_batch(batch_idx, istrain):
-    if istrain:
-        template = '../data/train/%s.jpg'
-    else:
-        template = '../data/test/%s.jpg'
-    l = [str(batch_idx*128 + i).zfill(6) for i in range(128)]
-    data = []
-    for idx in l:
-        img = Image.open(template%idx)
-        data.append(np.array(img))
-    data = [totensor(i) for i in data]
-    return torch.stack(data, dim=0)
+my_transforms = transforms.Compose([transforms.Resize((128,128)), transforms.ToTensor()])
+face_train_loader = torch.utils.data.DataLoader(
+        datasets.CelebA('../data', download=True,transform=my_transforms),
+        batch_size=args.batch_size,shuffle=True, **kwargs)
+
+face_test_loader = torch.utils.data.DataLoader(
+        datasets.CelebA('../data',
+            transform=my_transforms, split='test'),
+        batch_size=args.batch_size,shuffle=True, **kwargs)
+
+train_loader = face_train_loader
+test_loader = face_test_loader
+
+#totensor = transforms.ToTensor()
+#def load_batch(batch_idx, istrain):
+#    if istrain
+#        template = '../data/train/%s.jpg'
+#    else:
+#        template = '../data/test/%s.jpg'
+#    l = [str(batch_idx*128 + i).zfill(6) for i in range(128)]
+#    data = []
+#    for idx in l:
+#        img = Image.open(template%idx)
+#        data.append(np.array(img))
+#    data = [totensor(i) for i in data]
+#    return torch.stack(data, dim=0)
 
 
 class VAE(nn.Module):
@@ -112,12 +138,18 @@ class VAE(nn.Module):
         self.sigmoid = nn.Sigmoid()
 
     def encode(self, x):
+#        print('size(x)',x.size())
         h1 = self.leakyrelu(self.bn1(self.e1(x)))
         h2 = self.leakyrelu(self.bn2(self.e2(h1)))
         h3 = self.leakyrelu(self.bn3(self.e3(h2)))
         h4 = self.leakyrelu(self.bn4(self.e4(h3)))
-        h5 = self.leakyrelu(self.bn5(self.e5(h4)))
+#        print('size(h4)',h4.size())
+        h5a = self.e5(h4)
+        h5b = self.bn5(h5a)
+        h5 = self.leakyrelu(h5b)
         h5 = h5.view(-1, self.ndf*8*4*4)
+        
+#        print('h5 size is', h5.size())
 
         return self.fc1(h5), self.fc2(h5)
 
@@ -146,63 +178,75 @@ class VAE(nn.Module):
         return z
 
     def forward(self, x):
+#        print('size of x', x.size())
         mu, logvar = self.encode(x.view(-1, self.nc, self.ndf, self.ngf))
         z = self.reparametrize(mu, logvar)
-        res = self.decode(z)
-        return res, mu, logvar
+        result = self.decode(z)
+        return result.view(x.size()), mu, logvar
 
 
-model = VAE(nc=3, ngf=128, ndf=128, latent_variable_size=500)
+model = VAE(nc=1, ngf=128, ndf=128, latent_variable_size=500)
 
 if args.cuda:
     model.cuda()
 
+global BCE, KLD, MSE
 reconstruction_function = nn.BCELoss()
 reconstruction_function.size_average = False
+recon_loss = nn.MSELoss()
 def loss_function(recon_x, x, mu, logvar):
+    global BCE, KLD, MSE
     BCE = reconstruction_function(recon_x, x)
+    MSE = recon_loss(recon_x, x)
+    
 
     # https://arxiv.org/abs/1312.6114 (Appendix B)
     # 0.5 * sum(1 + log(sigma^2) - mu^2 - sigma^2)
     KLD_element = mu.pow(2).add_(logvar.exp()).mul_(-1).add_(1).add_(logvar)
     KLD = torch.sum(KLD_element).mul_(-0.5)
 
-    return BCE + KLD
+#    return BCE + KLD
+    return MSE + KLD
 
 optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
 def train(epoch):
     model.train()
     train_loss = 0
-    for batch_idx in train_loader:
-        data = load_batch(batch_idx, True)
-        data = Variable(data)
+    counter = 0
+    for batch_idx, (data, _) in enumerate(train_loader):
+        data.to(device)
         if args.cuda:
             data = data.cuda()
         optimizer.zero_grad()
         recon_batch, mu, logvar = model(data)
+        see2(data[0],recon_batch[0])
+        plt.pause(0.2)
         loss = loss_function(recon_batch, data, mu, logvar)
         loss.backward()
-        train_loss += loss.data[0]
+        train_loss += loss.item()
+        counter += 1
         optimizer.step()
         if batch_idx % args.log_interval == 0:
-            print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
-                epoch, batch_idx * len(data), (len(train_loader)*128),
-                100. * batch_idx / len(train_loader),
-                loss.data[0] / len(data)))
+            format_str = \
+            'Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'+\
+            '\tMSE: {}\tKLD:{}'
 
-    print('====> Epoch: {} Average loss: {:.4f}'.format(
-          epoch, train_loss / (len(train_loader)*128)))
-    return train_loss / (len(train_loader)*128)
+            print(format_str.format(epoch, batch_idx * len(data), \
+                  (len(train_loader)*128),
+                100. * batch_idx / len(train_loader),
+                loss.item(),MSE,KLD))
+
+    avg_loss = train_loss/counter
+    print('====> Epoch: {} Average loss: {:.4f} '.format(
+          epoch, avg_loss ))
+    return avg_loss
 
 def test(epoch):
     model.eval()
     test_loss = 0
-    for batch_idx in test_loader:
-        data = load_batch(batch_idx, False)
-        data = Variable(data, volatile=True)
-        if args.cuda:
-            data = data.cuda()
+    for batch_idx, (data, _) in enumerate(test_loader):
+        data.to(device)
         recon_batch, mu, logvar = model(data)
         test_loss += loss_function(recon_batch, data, mu, logvar).data[0]
 
@@ -284,6 +328,9 @@ def rand_faces(num=5):
 
 def load_last_model():
     models = glob('../models/*.pth')
+    if not models:
+        return 1,None
+    
     model_ids = [(int(f.split('_')[1]), f) for f in models]
     start_epoch, last_cp = max(model_ids, key=lambda item:item[0])
     print('Last checkpoint: ', last_cp)
@@ -302,6 +349,29 @@ def last_model_to_cpu():
     _, last_cp = load_last_model()
     model.cpu()
     torch.save(model.state_dict(), '../models/cpu_'+last_cp.split('/')[-1])
+
+
+def see2(T1, T2):
+    
+    try:
+        assert(T1.size() == T2.size())
+    except AssertionError:
+        print('Size mismatch!!  T1',T1.size(),'T2',T2.size())
+        return
+    
+    if T1.size()[0]==3:
+        T1 = T1.permute(1,2,0)
+        T2 = T2.permute(1,2,0)
+        
+    img1 = T1.cpu().detach().numpy()
+    img2 = T2.cpu().detach().numpy()
+    
+    both = np.concatenate((img1,img2),axis=1)
+    
+    plt.imshow(both)
+    
+    return
+
 
 if __name__ == '__main__':
     resume_training()
